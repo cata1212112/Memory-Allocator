@@ -15,6 +15,16 @@ struct Block {
     intptr_t data[1];
 } *heapstart = nullptr;
 
+Block *segregatedList[] = {
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr
+};
+
 auto top = heapstart;
 auto searchstart = heapstart;
 
@@ -35,25 +45,45 @@ Block *getHeader(intptr_t *data) {
     return (Block *)((char *)data + sizeof(std::declval<Block>().data) - sizeof(Block));
 }
 
-Block *FirstFit(size_t size) {
-    auto block = heapstart;
-
-    while (block != nullptr) {
-        if (!block->used && block->size >= size) return block;
-        block = block->next;
-    }
-    return nullptr;
-}
-
 bool canSplit(Block *block, size_t size) {
-    int remaining = block->size - sizeof(Block);
+    int remaining = block->size - size;
     if (remaining < sizeof(Block) - sizeof(std::declval<Block>().data)) return 0;
     return 1;
 }
 
-Block *split(Block *block, size_t size) {
-    if (!canSplit(Block, size)) return nullptr;
+void split(Block *block, size_t size) {
+    if (!canSplit(block, size)) return ;
+    int remaining = block->size - size;
     block->size = size;
+    auto sp = (Block *) ((char *)block + size);
+    sp->size = remaining;
+    sp->next = block->next;
+    sp->used = false;
+    block->next = sp;
+}
+
+bool canCombine(Block *block) {
+    return block->next && !block->next->used;
+}
+
+void Combine(Block *block) {
+    if (!canCombine(block)) {
+        return;
+    }
+    block->size += block->next->size;
+    block->next = block->next->next;
+}
+
+Block *FirstFit(size_t size) {
+    auto block = heapstart;
+
+    while (block != nullptr) {
+        if (!block->used && block->size >= size) {
+            return block;
+        }
+        block = block->next;
+    }
+    return nullptr;
 }
 
 Block *NextFit(size_t size) {
@@ -107,11 +137,15 @@ intptr_t *m_alloc(size_t n) {
     size_t real_size = allign(n);
 
     auto search = BestFit(real_size);
-    if (search != nullptr) return search->data;
+    if (search != nullptr) {
+        split(search, n);
+        return search->data;
+    }
 
     auto block = HeapRequest(real_size);
     block->size = real_size;
     block->used = true;
+    block->next = nullptr;
 
     if (heapstart == nullptr) {
         heapstart = block;
@@ -123,12 +157,12 @@ intptr_t *m_alloc(size_t n) {
     }
 
     top = block;
-
     return block->data;
 }
 
 void free(intptr_t *data) {
     auto blk = getHeader(data);
+    Combine(blk);
     blk->used = false;
 }
 
@@ -138,5 +172,25 @@ void Initialization() {
 
 int main() {
     Initialization();
+
+//    auto da = m_alloc(64);
+//    auto dab = getHeader(da);
+//    free(da);
+//    printf("%p\n", dab);
+//    printf("%p\n", dab->next);
+//    auto ok = m_alloc(8);
+//    auto okb = getHeader(ok);
+//    printf("%p\n", okb);
+//    printf("%p\n", okb->next);
+//    printf("%p\n", okb->next->next);
+//    printf("%d\n", dab->size);
+//    printf("%d\n", dab->next->size);
+//    printf("%d\n", okb->size);
+//    printf("%d\n", okb->next->size);
+//
+//    free(ok);
+//    printf("%p\n", okb);
+//    printf("%p\n", okb->next);
+//    printf("%d\n", okb->size);
     return 0;
 }
