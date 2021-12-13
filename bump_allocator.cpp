@@ -2,6 +2,7 @@
 #include <utility>
 #include <heapapi.h>
 #include <memoryapi.h>
+#include <assert.h>
 
 using namespace std;
 
@@ -160,6 +161,7 @@ intptr_t *m_alloc(size_t n) {
     auto search = SearchFunctions[2](real_size);
     if (search != nullptr) {
         split(search, real_size);
+        SetUsed(search, true);
         return search->data;
     }
 
