@@ -11,7 +11,7 @@ int msk = 0xFFFFFF8;
 struct Block {
     size_t header;
     struct Block *next;
-    intptr_t data[1];
+    intptr_t *data;
 } *heapstart = nullptr;
 
 typedef Block* (*SearchModes) (size_t size);
@@ -59,7 +59,7 @@ size_t allign(size_t n) {
 }
 
 size_t total_alloc_size(size_t n) {
-    return n + sizeof(struct Block) - sizeof(declval<Block>().data);
+    return n + sizeof(struct Block) - sizeof(intptr_t);
 }
 
 Block *HeapRequest(size_t size) {
@@ -69,12 +69,12 @@ Block *HeapRequest(size_t size) {
 }
 
 Block *getHeader(intptr_t *data) {
-    return (Block *)((char *)data + sizeof(std::declval<Block>().data) - sizeof(Block));
+    return (Block *)(data + (sizeof(intptr_t) - sizeof(Block))/8);
 }
 
 bool canSplit(Block *block, size_t size) {
     size_t remaining = GetSize(block) - size;
-    if (remaining < sizeof(Block) - sizeof(std::declval<Block>().data)) return false;
+    if (remaining < sizeof(Block)) return false;
     return true;
 }
 
@@ -83,7 +83,7 @@ void split(Block *block, size_t size) {
     size_t remaining = GetSize(block) - size;
     SetSize(block, size);
     auto sp = (Block *) ((char *)block + sizeof(intptr_t) + size);
-    sp->header = remaining;
+    sp->header = remaining - sizeof(struct Block) + sizeof(intptr_t);
     SetUsed(sp, false);
     sp->next = block->next;
     block->next = sp;
@@ -97,7 +97,7 @@ void Combine(Block *block) {
     if (!canCombine(block)) {
         return;
     }
-    SetSize(block, GetSize(block) + GetSize(block->next));
+    SetSize(block, GetSize(block) + GetSize(block->next) + sizeof(struct Block) - sizeof(intptr_t));
     block->next = block->next->next;
 }
 
@@ -162,7 +162,7 @@ intptr_t *m_alloc(size_t n) {
     if (search != nullptr) {
         split(search, real_size);
         SetUsed(search, true);
-        return search->data;
+        return (intptr_t *)&search->data;
     }
 
     auto block = HeapRequest(real_size);
@@ -180,7 +180,7 @@ intptr_t *m_alloc(size_t n) {
     }
 
     top = block;
-    return block->data;
+    return (intptr_t *)&block->data;
 }
 
 void free(intptr_t *data) {
@@ -193,39 +193,5 @@ int main() {
     heapstart = nullptr;
     top = nullptr;
     searchstart = nullptr;
-
-    auto da = m_alloc(64);
-    auto dab = getHeader(da);
-    free(da);
-
-    printf("Am un element de 64 la %p\n", dab);
-    printf("Urm elem e la %p\n", dab->next);
-
-    puts("\n\n");
-
-    auto ok = m_alloc(8);
-    auto okb = getHeader(ok);
-
-    printf("Am un element de 8 la %p\n", okb);
-    printf("Urm elem e la %p\n", okb->next);
-    printf("Urm elem e la %p\n", okb->next->next);
-    printf("Dim primului elem este %d\n", GetSize(dab));
-    printf("Dim al doilea elem este %d\n", GetSize(dab->next));
-    printf("Dim al primului elem este %d\n", GetSize(okb));
-    printf("Dim al treilea elem este %d\n", GetSize(okb->next));
-
-    puts("\n\n");
-
-    auto tt = m_alloc(16);
-    auto ttb = getHeader(tt);
-    printf("Primul elem este la %p\n", dab);
-    printf("Al doilea elem este la %p\n", dab->next);
-    printf("Al treilea elem este la %p\n", dab->next->next);
-    printf("Ultimul elem este la %p\n", okb->next->next);
-    printf("Al treilea elem este la %p\n", ttb);
-    printf("Ultimul elem este la %p\n", ttb->next);
-    printf("Ultimul elem este la  %p\n", ttb->next->next);
-    printf("Dim al treilea elem este %d\n", GetSize(ttb));
-    printf("Dim ultim elem este %d\n", GetSize(ttb->next));
     return 0;
 }
