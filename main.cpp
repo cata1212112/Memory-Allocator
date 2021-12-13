@@ -1,32 +1,57 @@
 #include <cstdio>
 #include <utility>
 #include <heapapi.h>
-#include <iostream>
-#include <assert.h>
+#include <memoryapi.h>
 
 using namespace std;
 
 int msk = 0xFFFFFF8;
 
 struct Block {
-    size_t size;
-    bool used;
+    size_t header;
     struct Block *next;
     intptr_t data[1];
 } *heapstart = nullptr;
 
-Block *segregatedList[] = {
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr
-};
+typedef Block* (*SearchModes) (size_t size);
+
+static void *arena = nullptr;
+static void *brk = nullptr;
+static size_t arenaSize = 4194304;
 
 auto top = heapstart;
 auto searchstart = heapstart;
+
+void *custom_sbrk(size_t increment) {
+    if (arena == nullptr) {
+        arena = VirtualAlloc(nullptr, arenaSize,MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        brk = arena;
+        return brk;
+    }
+    if (increment == 0) return brk;
+    if ((char*)brk + increment >= (char*)arena + arenaSize) return (void *)-1;
+    brk = (char*)brk + increment;
+    return brk;
+}
+
+size_t GetSize(Block *block) {
+    return block->header & ~1;
+}
+
+bool GetUsed(Block *block) {
+    return block->header & 1;
+}
+
+void SetUsed(Block *block, bool used) {
+    if (used) block->header |= 1;
+    else block->header &= ~1;
+}
+
+void SetSize(Block *block, size_t size) {
+    bool tmp2 = GetUsed(block);
+    block->header = size;
+    SetUsed(block, tmp2);
+}
 
 size_t allign(size_t n) {
     return (n + sizeof(intptr_t) - 1) & msk;
@@ -37,7 +62,8 @@ size_t total_alloc_size(size_t n) {
 }
 
 Block *HeapRequest(size_t size) {
-    auto block = (Block *)HeapAlloc(GetProcessHeap(), 0x00000004, total_alloc_size(size));
+    auto block = (Block *)custom_sbrk(0);
+    if (custom_sbrk(total_alloc_size(size)) == (void *)-1) return nullptr;
     return block;
 }
 
@@ -46,31 +72,31 @@ Block *getHeader(intptr_t *data) {
 }
 
 bool canSplit(Block *block, size_t size) {
-    int remaining = block->size - size;
-    if (remaining < sizeof(Block) - sizeof(std::declval<Block>().data)) return 0;
-    return 1;
+    size_t remaining = GetSize(block) - size;
+    if (remaining < sizeof(Block) - sizeof(std::declval<Block>().data)) return false;
+    return true;
 }
 
 void split(Block *block, size_t size) {
     if (!canSplit(block, size)) return ;
-    int remaining = block->size - size;
-    block->size = size;
-    auto sp = (Block *) ((char *)block + size);
-    sp->size = remaining;
+    size_t remaining = GetSize(block) - size;
+    SetSize(block, size);
+    auto sp = (Block *) ((char *)block + sizeof(intptr_t) + size);
+    sp->header = remaining;
+    SetUsed(sp, false);
     sp->next = block->next;
-    sp->used = false;
     block->next = sp;
 }
 
 bool canCombine(Block *block) {
-    return block->next && !block->next->used;
+    return block->next && !GetUsed(block->next);
 }
 
 void Combine(Block *block) {
     if (!canCombine(block)) {
         return;
     }
-    block->size += block->next->size;
+    SetSize(block, GetSize(block) + GetSize(block->next));
     block->next = block->next->next;
 }
 
@@ -78,7 +104,7 @@ Block *FirstFit(size_t size) {
     auto block = heapstart;
 
     while (block != nullptr) {
-        if (!block->used && block->size >= size) {
+        if (!GetUsed(block) && GetSize(block) >= size) {
             return block;
         }
         block = block->next;
@@ -90,7 +116,7 @@ Block *NextFit(size_t size) {
     auto block = searchstart;
     auto stop = searchstart;
     while (block != nullptr) {
-        if (!block->used && block->size >= size) {
+        if (!GetUsed(block) && GetSize(block) >= size) {
             searchstart = block;
             return block;
         }
@@ -98,7 +124,7 @@ Block *NextFit(size_t size) {
     }
     block = heapstart;
     while (block != stop) {
-        if (!block->used && block->size >= size) {
+        if (!GetUsed(block) && GetSize(block) >= size) {
             searchstart = block;
             return block;
         }
@@ -110,11 +136,11 @@ Block *NextFit(size_t size) {
 Block *BestFit(size_t size) {
     auto block = heapstart;
     Block* ales = nullptr;
-    int mini = 1e9;
+    size_t mini = 1e9;
     while (block != nullptr) {
-        if (!block->used && block->size >= size) {
-            if (block->size - size < mini) {
-                mini = block->size - size;
+        if (!GetUsed(block) && GetSize(block) >= size) {
+            if (GetSize(block) - size < mini) {
+                mini = GetSize(block) - size;
                 ales = block;
             }
         }
@@ -123,28 +149,23 @@ Block *BestFit(size_t size) {
     return ales;
 }
 
-void ResetHeap() {
-    if (heapstart == nullptr) {
-        return;
-    }
-    HeapDestroy(GetProcessHeap());
-    heapstart = nullptr;
-    top = nullptr;
-    searchstart = nullptr;
-}
+SearchModes SearchFunctions[] = {
+        FirstFit,
+        NextFit,
+        BestFit
+};
 
 intptr_t *m_alloc(size_t n) {
     size_t real_size = allign(n);
-
-    auto search = BestFit(real_size);
+    auto search = SearchFunctions[2](real_size);
     if (search != nullptr) {
-        split(search, n);
+        split(search, real_size);
         return search->data;
     }
 
     auto block = HeapRequest(real_size);
-    block->size = real_size;
-    block->used = true;
+    block->header = real_size;
+    SetUsed(block, true);
     block->next = nullptr;
 
     if (heapstart == nullptr) {
@@ -163,34 +184,46 @@ intptr_t *m_alloc(size_t n) {
 void free(intptr_t *data) {
     auto blk = getHeader(data);
     Combine(blk);
-    blk->used = false;
-}
-
-void Initialization() {
-    ResetHeap();
+    SetUsed(blk, false);
 }
 
 int main() {
-    Initialization();
+    heapstart = nullptr;
+    top = nullptr;
+    searchstart = nullptr;
 
-//    auto da = m_alloc(64);
-//    auto dab = getHeader(da);
-//    free(da);
-//    printf("%p\n", dab);
-//    printf("%p\n", dab->next);
-//    auto ok = m_alloc(8);
-//    auto okb = getHeader(ok);
-//    printf("%p\n", okb);
-//    printf("%p\n", okb->next);
-//    printf("%p\n", okb->next->next);
-//    printf("%d\n", dab->size);
-//    printf("%d\n", dab->next->size);
-//    printf("%d\n", okb->size);
-//    printf("%d\n", okb->next->size);
-//
-//    free(ok);
-//    printf("%p\n", okb);
-//    printf("%p\n", okb->next);
-//    printf("%d\n", okb->size);
+    auto da = m_alloc(64);
+    auto dab = getHeader(da);
+    free(da);
+
+    printf("Am un element de 64 la %p\n", dab);
+    printf("Urm elem e la %p\n", dab->next);
+
+    puts("\n\n");
+
+    auto ok = m_alloc(8);
+    auto okb = getHeader(ok);
+
+    printf("Am un element de 8 la %p\n", okb);
+    printf("Urm elem e la %p\n", okb->next);
+    printf("Urm elem e la %p\n", okb->next->next);
+    printf("Dim primului elem este %d\n", GetSize(dab));
+    printf("Dim al doilea elem este %d\n", GetSize(dab->next));
+    printf("Dim al primului elem este %d\n", GetSize(okb));
+    printf("Dim al treilea elem este %d\n", GetSize(okb->next));
+
+    puts("\n\n");
+
+    auto tt = m_alloc(16);
+    auto ttb = getHeader(tt);
+    printf("Primul elem este la %p\n", dab);
+    printf("Al doilea elem este la %p\n", dab->next);
+    printf("Al treilea elem este la %p\n", dab->next->next);
+    printf("Ultimul elem este la %p\n", okb->next->next);
+    printf("Al treilea elem este la %p\n", ttb);
+    printf("Ultimul elem este la %p\n", ttb->next);
+    printf("Ultimul elem este la  %p\n", ttb->next->next);
+    printf("Dim al treilea elem este %d\n", GetSize(ttb));
+    printf("Dim ultim elem este %d\n", GetSize(ttb->next));
     return 0;
 }
