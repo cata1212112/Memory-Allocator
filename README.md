@@ -1,1 +1,1 @@
-C memory allocator
+C++ memory allocator
